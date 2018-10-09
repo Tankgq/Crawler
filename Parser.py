@@ -6,6 +6,7 @@ import re
 import simplejson
 from abc import abstractmethod
 
+from gevent import pool
 from lxml import etree
 from urllib import request, error
 import gzip
@@ -20,10 +21,16 @@ class ParserBase(object):
         'Cache-Control': 'max-age=0',
         'Accept-Encoding': 'gzip, deflate'
     }
+
+    _pool = None
     _target_dic = {}
     _target_set = set()
     _log_target_set = set()
     _state_dic = {}
+    _info = None
+
+    _title_count_in_page = 0
+    _title_count = 0
 
     _current_page = 0
     _sum_page = 0
@@ -31,6 +38,17 @@ class ParserBase(object):
     _sum_title = 0
     _current_image = 0
     _sum_image = 0
+
+    def __init__(self):
+        self._pool = pool.Pool(self.get_pool_max_size())
+
+    @abstractmethod
+    def get_pool_max_size(self):
+        pass
+
+    @abstractmethod
+    def get_html_encoding(self):
+        pass
 
     @abstractmethod
     def get_home_page(self):
@@ -91,7 +109,26 @@ class ParserBase(object):
         return self._target_dic[title]['url']
 
     def get_log_path(self):
-        return '{}/log.txt'.format(self.get_output_path())
+        return '{}/log.json'.format(self.get_output_path())
+
+    def get_info_path(self):
+        return '{}/info.json'.format(self.get_output_path())
+
+    def read_info(self):
+        info_path = self.get_info_path()
+        if not os.path.exists(info_path):
+            return
+        with codecs.open(info_path, 'r', 'utf-8') as fp:
+            _info = simplejson.load(fp, encoding='utf-8')
+
+    def write_info(self):
+        if self._info is None:
+            self._info = {}
+        self._info['title_count'] = self._sum_title
+        self._info['title_count_in_page'] = self._title_count_in_page
+        self._info['page_count'] = self._sum_page
+        with codecs.open(self.get_info_path(), 'w', 'utf-8') as fp:
+            simplejson.dump(obj=self._info, fp=fp, ensure_ascii=False, indent=4)
 
     def log_all(self):
         output_path = self.get_output_path()
@@ -147,6 +184,34 @@ class ParserBase(object):
     def adjust_file_name(file_name):
         return re.sub('[\\\/:\*\?"\|\<\>I]', '', file_name)
 
-    @abstractmethod
     def calc_sum_image_number(self):
-        pass
+        self._sum_image = 0
+        for title in self._target_dic:
+            info = self._target_dic[title]
+            if not info.__contains__('image'):
+                continue
+            for image in info['image']:
+                image_name = image[image.rfind('/') + 1:]
+                path = self.get_image_path(title, image_name)
+                if not os.path.exists(path):
+                    self._sum_image += 1
+
+    def get_title_count(self):
+        if self._sum_page == 0 or self._title_count_in_page == 0:
+            return 0
+        url = self.get_page_url(self._sum_page)
+        html = self.get_etree_html(self, url, 'gb18030')
+        a_tag_list = html.xpath('//*[@class="tit"]/a')
+        length = len(a_tag_list)
+        if length == 0:
+            return 0
+        return length + self._title_count_in_page * (self._sum_page - 1)
+
+    def update_title_idx(self):
+        if self._info is None \
+                or self._sum_title == 0 \
+                or self._info['title_count'] == self._sum_title:
+            return
+        update_count = self._sum_title - self._info['title_count']
+        for title in self._target_dic:
+            self._target_dic[title]['idx'] += update_count

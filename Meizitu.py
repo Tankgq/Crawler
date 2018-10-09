@@ -9,16 +9,20 @@ from Parser import ParserBase
 
 class MeizituParser(ParserBase):
 
-    _POOL_MAX_SIZE = 256
-    _pool = pool.Pool(_POOL_MAX_SIZE)
+    def get_pool_max_size(self):
+        return 256
+
+    def get_html_encoding(self):
+        return 'gb18030'
 
     def get_target_list(self):
         self._current_page = self._sum_page = 0
         self._current_title = self._sum_title = 0
         self._current_image = self._sum_image = 0
-        count = self.get_page_number()
-        self._sum_page = count
-        self._pool.map(self.get_target_in_page, [idx for idx in range(1, count + 1)])
+        self._sum_page = self.get_page_number()
+        print('Total page count: {}'.format(self._sum_page))
+        self._title_count = self.get_title_count()
+        self._pool.map(self.get_target_in_page, [idx for idx in range(1, self._sum_page + 1)])
         target_set = self._target_set - self._log_target_set
         self._sum_title = len(target_set)
         self._pool.map(self.get_image_url_list, target_set)
@@ -36,9 +40,21 @@ class MeizituParser(ParserBase):
 
     def get_page_number(self):
         html = self.get_etree_html(self, self.get_home_page(), 'gb18030')
+        a_tag_list = html.xpath('//*[@class="tit"]/a')
+        self._title_count_in_page = len(a_tag_list)
         a_tag = html.xpath('//div[@id="wp_page_numbers"]//a')[-1]
         a_href = a_tag.attrib['href']
         return int(re.findall('\d+', a_href)[0])
+
+    def get_page_idx_by_title(self, title):
+        if self._title_count_in_page == 0:
+            return 0
+        if not self._target_dic.__contains__(title):
+            return 0
+        if not self._target_dic[title].__contains__('idx'):
+            return 0
+        title_idx = self._target_dic[title]['idx']
+        return (title_idx + self._title_count_in_page - 1) // self._title_count_in_page
 
     def get_target_in_page(self, page_idx):
         url = self.get_page_url(page_idx)
@@ -110,18 +126,6 @@ class MeizituParser(ParserBase):
             with open(path, 'wb') as fp:
                 fp.write(content)
 
-    def calc_sum_image_number(self):
-        self._sum_image = 0
-        for title in self._target_dic:
-            info = self._target_dic[title]
-            if not info.__contains__('image'):
-                continue
-            for image in info['image']:
-                image_name = image[image.rfind('/') + 1:]
-                path = self.get_image_path(title, image_name)
-                if not os.path.exists(path):
-                    self._sum_image += 1
-
 
 def init():
     monkey.patch_all()
@@ -130,7 +134,7 @@ def init():
 def main():
     init()
     m_parser = MeizituParser()
-    print(os.path.abspath(m_parser.get_output_path()))
+    print('Output path: {}'.format(os.path.abspath(m_parser.get_output_path())))
     m_parser.read_from_log()
     m_parser.get_target_list()
     m_parser.download_all_image()
