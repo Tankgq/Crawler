@@ -1,9 +1,4 @@
 # http://www.meizitu.com/
-import os
-import re
-
-# gevent 1.2.2
-from gevent import monkey, pool
 from Parser import ParserBase
 
 
@@ -15,20 +10,6 @@ class MeizituParser(ParserBase):
     def get_html_encoding(self):
         return 'gb18030'
 
-    def get_target_list(self):
-        self._current_page = self._sum_page = 0
-        self._current_title = self._sum_title = 0
-        self._current_image = self._sum_image = 0
-        self._sum_page = self.get_page_number()
-        print('Total page count: {}'.format(self._sum_page))
-        self._title_count = self.get_title_count()
-        self._pool.map(self.get_target_in_page, [idx for idx in range(1, self._sum_page + 1)])
-        target_set = self._target_set - self._log_target_set
-        self._sum_title = len(target_set)
-        self._pool.map(self.get_image_url_list, target_set)
-        self.calc_sum_image_number()
-        self.log_all()
-
     def get_home_page(self):
         return 'http://www.meizitu.com/a/more_1.html'
 
@@ -38,105 +19,85 @@ class MeizituParser(ParserBase):
     def get_page_url(self, idx):
         return 'http://www.meizitu.com/a/more_{}.html'.format(idx)
 
-    def get_page_number(self):
-        html = self.get_etree_html(self, self.get_home_page(), 'gb18030')
+    def get_page_count(self):
+        html = self.get_etree_html(self, self.get_home_page(), self.get_html_encoding())
         a_tag_list = html.xpath('//*[@class="tit"]/a')
         self._title_count_in_page = len(a_tag_list)
-        a_tag = html.xpath('//div[@id="wp_page_numbers"]//a')[-1]
-        a_href = a_tag.attrib['href']
-        return int(re.findall('\d+', a_href)[0])
+        a_href = html.xpath('//div[@id="wp_page_numbers"]//a/@href')[-1]
+        return self.get_first_integer_in_string(a_href)
 
-    def get_page_idx_by_title(self, title):
-        if self._title_count_in_page == 0:
-            return 0
-        if not self._target_dic.__contains__(title):
-            return 0
-        if not self._target_dic[title].__contains__('idx'):
-            return 0
-        title_idx = self._target_dic[title]['idx']
-        return (title_idx + self._title_count_in_page - 1) // self._title_count_in_page
+    def get_all_title(self):
+        self._current_page_count = self._sum_page_count = 0
+        self._sum_page_count = self.get_page_count()
+        print('Total page count: {}'.format(self._sum_page_count))
+        self._title_count = self.get_title_count()
+        need_page_idx_set = self.get_need_page_idx_set()
+        self._sum_page_count = len(need_page_idx_set)
+        self._pool.map(self.get_title_in_page, need_page_idx_set)
 
-    def get_target_in_page(self, page_idx):
+    def get_title_list_in_page_rule(self):
+        return '//*[@class="tit"]/a'
+
+    def get_title_in_page(self, page_idx):
         url = self.get_page_url(page_idx)
         html = self.get_etree_html(self, url, 'gb18030')
-        self._current_page += 1
-        print('{} page: {}'.format(self.get_progress(self._current_page, self._sum_page), url))
-        a_tag_list = html.xpath('//*[@class="tit"]/a')
-        self._sum_title += len(a_tag_list)
-        for a_tag in a_tag_list:
+        self._current_page_count += 1
+        print('{} page: {}'.format(self.get_progress(self._current_page_count, self._sum_page_count), url))
+        a_tag_list = html.xpath(self.get_title_list_in_page_rule())
+        title_count = len(a_tag_list)
+        self._sum_title_count += title_count
+        for idx in range(0, title_count):
+            a_tag = a_tag_list[idx]
             if a_tag.text is None:
                 title = a_tag.xpath('b/text()')[0].strip()
             else:
                 title = a_tag.text.strip()
             title = self.adjust_file_name(title)
-            self._target_set.add(title)
             if self.get_url_by_title(title) is None:
-                self._target_dic[title] = {'url': a_tag.attrib['href']}
+                self._title_dic[title] = {'url': a_tag.attrib['href'],
+                                          'pos': (page_idx - 1) * self._title_count_in_page + idx + 1}
+        self.log_all_title()
 
-    def get_image_url_list(self, title):
+    def get_all_image_url(self):
+        title_set = set(self._title_dic) - self._log_title_set
+        self._current_title_count = 0
+        self._sum_title_count = len(title_set)
+        self._pool.map(self.get_image_url_list_by_title, title_set)
+        self.log_all_title()
+
+    def get_image_url_list_by_title(self, title):
         url = self.get_url_by_title(title)
         if url is None:
             return
         html = self.get_etree_html(self, url, 'gb18030')
-        self._current_title += 1
-        if self._current_title > 0 and self._current_title & 0xFF == 0:
-            self.log_all()
-        print('{} title: {}'.format(self.get_progress(self._current_title, self._sum_title), title))
+        self._current_title_count += 1
+        if self._current_title_count > 0 and self._current_title_count & 0xFF == 0:
+            self.log_all_title()
+        print('{} title: {}'.format(self.get_progress(self._current_title_count, self._sum_title_count), title))
 
         img_src_list = html.xpath('//div[@class="postContent"]//p[1]//img/@src')
         if len(img_src_list) == 0:
             print('Can\'t find image.({})'.format(url))
             return
-        info = self._target_dic[title]
+        info = self._title_dic[title]
         common_prefix = img_src_list[0].strip()
         common_prefix = common_prefix[:common_prefix.rfind('uploads/') + 8]
         info['url_prefix'] = common_prefix
         info['image'] = []
-        self._sum_image += len(img_src_list)
+        self._sum_image_count += len(img_src_list)
         for image in img_src_list:
             image_src = image.strip()
             image = image_src[common_prefix.rfind('uploads/') + 8:]
             info['image'].append(image)
 
-    def download_all_image(self):
-        self.init_folder()
-        params_list = []
-        for title in self._target_dic:
-            info = self._target_dic[title]
-            if not info.__contains__('image'):
-                continue
-            url_prefix = info['url_prefix']
-            for image in info['image']:
-                image_name = image[image.rfind('/') + 1:]
-                path = self.get_image_path(title, image_name)
-                params_list.append((image_name, url_prefix + image, path, info['url']))
-        self._pool.map(self.download_image, params_list)
-
-    def download_image(self, params):
-        url = params[1]
-        path = params[2]
-        target_url = params[3]
-        if not os.path.exists(path):
-            content = self.download_file(url,
-                                         on_error=lambda e: print('Download error: {}, in: {}'.format(url, target_url)))
-            if content is None:
-                return
-            self._current_image += 1
-            print('{} download: {}'.format(self.get_progress(self._current_image, self._sum_image), url))
-            with open(path, 'wb') as fp:
-                fp.write(content)
-
-
-def init():
-    monkey.patch_all()
-
 
 def main():
-    init()
     m_parser = MeizituParser()
-    print('Output path: {}'.format(os.path.abspath(m_parser.get_output_path())))
-    m_parser.read_from_log()
-    m_parser.get_target_list()
+    m_parser.patch_all()
+    m_parser.read_log()
+    m_parser.read_info()
+    m_parser.get_all_title()
+    m_parser.get_all_image_url()
     m_parser.download_all_image()
 
 
