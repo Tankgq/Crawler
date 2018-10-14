@@ -122,22 +122,79 @@ class ParserBase(object):
     @abstractmethod
     # 获取要抓取的网站中所有的标题
     def get_all_title(self):
-        pass
+        self._current_page_count = 0
+        self._sum_page_count = self.get_page_count()
+        print('Total page count: {}'.format(self._sum_page_count))
+        self._title_count = self.get_title_count()
+        need_page_idx_set = self.get_need_page_idx_set()
+        self._sum_page_count = len(need_page_idx_set)
+        self._pool.map(self.get_title_in_page, need_page_idx_set)
 
     @abstractmethod
     # 获取所有标题内对应图片的地址
     def get_all_image_url(self):
+        title_set = set(self._title_dic) - self._log_title_set
+        self._current_title_count = 0
+        self._sum_title_count = len(title_set)
+        self._pool.map(self.get_image_url_list_by_title, title_set)
+        self.log_all_title()
+
+    @abstractmethod
+    # 从标题对应的网页中解析图片地址的 xpath 规则
+    def get_image_url_list_rule(self):
         pass
 
     @abstractmethod
     # 获取相应页里面的所有标题
-    def get_title_in_page(self, url):
+    def get_title_in_page(self, page_idx):
+        url = self.get_page_url(page_idx)
+        html = self.get_etree_html(self, url, self.get_html_encoding())
+        self._current_page_count += 1
+        print('{} page: {}'.format(self.get_progress(self._current_page_count, self._sum_page_count), url))
+        a_tag_list = html.xpath(self.get_title_list_in_page_rule())
+        title_count = len(a_tag_list)
+        self._sum_title_count += title_count
+        for idx in range(0, title_count):
+            a_tag = a_tag_list[idx]
+            title = self.get_title_in_tag(a_tag)
+            title = self.adjust_file_name(title)
+            if self.get_url_by_title(title) is None:
+                self._title_dic[title] = {'url': a_tag.attrib['href'],
+                                          'pos': (page_idx - 1) * self._title_count_in_page + idx + 1}
+        self.log_all_title()
+
+    @abstractmethod
+    # 获得图片地址的共同前缀的最后一个字符的下标
+    def get_image_url_common_prefix_idx(self, image_url):
         pass
 
     @abstractmethod
     # 获取相应标题内所有的图片的地址
     def get_image_url_list_by_title(self, title):
-        pass
+        url = self.get_url_by_title(title)
+        if url is None:
+            return
+        html = self.get_etree_html(self, url, self.get_html_encoding())
+        self._current_title_count += 1
+        if self._current_title_count > 0 and self._current_title_count & 0xFF == 0:
+            self.log_all_title()
+        print('{} title: {}'.format(self.get_progress(self._current_title_count, self._sum_title_count), title))
+
+        img_src_list = html.xpath(self.get_image_url_list_rule())
+        if len(img_src_list) == 0:
+            print('Can\'t find image.({})'.format(url))
+            return
+        info = self._title_dic[title]
+        common_prefix = img_src_list[0].strip()
+        common_prefix_idx = self.get_image_url_common_prefix_idx(common_prefix)
+        common_prefix = common_prefix[:common_prefix_idx]
+        info['url_prefix'] = common_prefix
+        info['image'] = []
+        self._sum_image_count += len(img_src_list)
+        for image in img_src_list:
+            image_src = image.strip()
+            image = image_src[common_prefix_idx:]
+            info['image'].append(image)
 
     # 获取相应标题的地址
     def get_url_by_title(self, title):
@@ -283,8 +340,13 @@ class ParserBase(object):
                     self._sum_image_count += 1
 
     @abstractmethod
-    # 获取相应页里面匹配标题列表的 xpath 规则
+    # 获取相应网页里面匹配标题列表的 xpath 规则
     def get_title_list_in_page_rule(self):
+        pass
+
+    @abstractmethod
+    # 从含有标题的标题中获取标题
+    def get_title_in_tag(self, tag):
         pass
 
     # 获取要抓取的网站中的标题总数, 主要是为了确认要抓取的网站中新增了多少个标题
