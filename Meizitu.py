@@ -13,6 +13,9 @@ class MeizituParser(ParserBase):
     def get_home_page(self):
         return 'http://www.meizitu.com/a/more_1.html'
 
+    def get_top_title_size(self):
+        return 0
+
     def get_output_path(self):
         return './meizitu'
 
@@ -28,6 +31,12 @@ class MeizituParser(ParserBase):
 
     def get_title_list_in_page_rule(self):
         return '//*[@class="tit"]/a'
+
+    def filter_title(self, title):
+        return True
+
+    def filter_image(self, image_name):
+        return True
 
     def get_title_in_tag(self, tag):
         if tag.text is None:

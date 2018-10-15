@@ -32,10 +32,16 @@ class ParserBase(object):
     # 网站的状态, 如最新的标题, 以及当前获得的标题的总数等
     _info = None
 
+    # 总页数
+    _page_count = 0
     # 标题总数
     _title_count = 0
+    # 图片总数
+    _image_count = 0
     # 每一页有多少个标题
     _title_count_in_page = 0
+    # 置顶标题中有多少个是需要抓取的
+    _top_title_count = 0
 
     # 需要获取的页数
     _current_page_count = _sum_page_count = 0
@@ -69,9 +75,22 @@ class ParserBase(object):
         pass
 
     @abstractmethod
+    # 置顶的标题个数
+    def get_top_title_size(self):
+        pass
+
     # 获取抓取的内容输出的位置
     def get_output_path(self):
         pass
+
+    # 过滤一些标题
+    def filter_title(self, title):
+        return True
+
+    @abstractmethod
+    # 过滤一些图片名称
+    def filter_image(self, image_name):
+        return True
 
     # 获得网页的内容
     def get_html_content(self, url, on_error=None, encoding='utf-8'):
@@ -119,23 +138,24 @@ class ParserBase(object):
             need_page_idx_set.add(self.get_page_idx_by_title_idx(title_idx))
         return need_page_idx_set
 
-    @abstractmethod
     # 获取要抓取的网站中所有的标题
     def get_all_title(self):
         self._current_page_count = 0
         self._sum_page_count = self.get_page_count()
+        self._page_count = self._sum_page_count
         print('Total page count: {}'.format(self._sum_page_count))
         self._title_count = self.get_title_count()
         need_page_idx_set = self.get_need_page_idx_set()
         self._sum_page_count = len(need_page_idx_set)
+        self.write_info()
         self._pool.map(self.get_title_in_page, need_page_idx_set)
 
-    @abstractmethod
     # 获取所有标题内对应图片的地址
     def get_all_image_url(self):
         title_set = set(self._title_dic) - self._log_title_set
         self._current_title_count = 0
         self._sum_title_count = len(title_set)
+        self.write_info()
         self._pool.map(self.get_image_url_list_by_title, title_set)
         self.log_all_title()
 
@@ -144,7 +164,6 @@ class ParserBase(object):
     def get_image_url_list_rule(self):
         pass
 
-    @abstractmethod
     # 获取相应页里面的所有标题
     def get_title_in_page(self, page_idx):
         url = self.get_page_url(page_idx)
@@ -158,6 +177,8 @@ class ParserBase(object):
             a_tag = a_tag_list[idx]
             title = self.get_title_in_tag(a_tag)
             title = self.adjust_file_name(title)
+            if not self.filter_title(title):
+                continue
             if self.get_url_by_title(title) is None:
                 self._title_dic[title] = {'url': a_tag.attrib['href'],
                                           'pos': (page_idx - 1) * self._title_count_in_page + idx + 1}
@@ -168,7 +189,6 @@ class ParserBase(object):
     def get_image_url_common_prefix_idx(self, image_url):
         pass
 
-    @abstractmethod
     # 获取相应标题内所有的图片的地址
     def get_image_url_list_by_title(self, title):
         url = self.get_url_by_title(title)
@@ -194,6 +214,8 @@ class ParserBase(object):
         for image in img_src_list:
             image_src = image.strip()
             image = image_src[common_prefix_idx:]
+            if not self.filter_image(image):
+                continue
             info['image'].append(image)
 
     # 获取相应标题的地址
@@ -224,9 +246,19 @@ class ParserBase(object):
     def write_info(self):
         if self._info is None:
             self._info = {}
-        self._info['title_count'] = self._sum_title_count
-        self._info['title_count_in_page'] = self._title_count_in_page
-        self._info['page_count'] = self._sum_page_count
+        if self._top_title_count:
+            self._info['top_title_count'] = self._top_title_count
+        if self._page_count:
+            self._info['page_count'] = self._page_count
+        if self._title_count != 0:
+            self._info['title_count'] = self._title_count
+        if self._title_count_in_page:
+            self._info['title_count_in_page'] = self._title_count_in_page
+        if self._image_count:
+            self._info['image_count'] = self._image_count
+        output_path = self.get_output_path()
+        if not os.path.exists(output_path):
+            os.mkdir(output_path)
         with codecs.open(self.get_info_path(), 'w', 'utf-8') as fp:
             simplejson.dump(obj=self._info, fp=fp, ensure_ascii=False, indent=4)
 
@@ -258,6 +290,7 @@ class ParserBase(object):
         self.init_folder()
         self._current_image_count = 0
         self.calc_sum_image_number()
+        self.write_info()
         params_list = []
         for title in self._title_dic:
             info = self._title_dic[title]
@@ -267,6 +300,8 @@ class ParserBase(object):
             for image in info['image']:
                 image_name = image[image.rfind('/') + 1:]
                 path = self.get_image_path(title, image_name)
+                if os.path.exists(path):
+                    continue
                 params_list.append((image_name, url_prefix + image, path, info['url']))
         self._pool.map(self.download_image, params_list)
 
@@ -294,7 +329,7 @@ class ParserBase(object):
     def get_title_path(self, title):
         return '{}/{}'.format(self.get_output_path(), title)
 
-    # 获取想应图片存储的路径
+    # 获取相应图片存储的路径
     def get_image_path(self, title, name):
         return '{}/{}'.format(self.get_title_path(title), name)
 
@@ -329,6 +364,7 @@ class ParserBase(object):
     # 获取需要下载的图片总数, 不包括已经下载好的
     def calc_sum_image_number(self):
         self._sum_image_count = 0
+        self._image_count = 0
         for title in self._title_dic:
             info = self._title_dic[title]
             if not info.__contains__('image'):
@@ -336,6 +372,7 @@ class ParserBase(object):
             for image in info['image']:
                 image_name = image[image.rfind('/') + 1:]
                 path = self.get_image_path(title, image_name)
+                self._image_count += 1
                 if not os.path.exists(path):
                     self._sum_image_count += 1
 
@@ -359,7 +396,7 @@ class ParserBase(object):
         length = len(a_tag_list)
         if length == 0:
             return 0
-        title_count = length + self._title_count_in_page * (self._sum_page_count - 1)
+        title_count = length + self._title_count_in_page * (self._sum_page_count - 1) + self._top_title_count
         print('Total title count: {}'.format(title_count))
         return title_count
 
@@ -382,7 +419,6 @@ class ParserBase(object):
         # 获取当前已经获得标题对应链接的标题序号
         has_title_set = set()
         for title in self._title_dic:
-            pos = self._title_dic[title]['pos']
             has_title_set.add(self._title_dic[title]['pos'])
         return all_title_idx_set - has_title_set
 
@@ -390,4 +426,6 @@ class ParserBase(object):
     def get_page_idx_by_title_idx(self, title_idx):
         if self._title_count_in_page == 0:
             return 0
-        return (title_idx + self._title_count_in_page - 1) // self._title_count_in_page
+        if title_idx <= self._title_count_in_page + self._top_title_count:
+            return 1
+        return (title_idx - self._top_title_count - 1) // self._title_count_in_page + 1
