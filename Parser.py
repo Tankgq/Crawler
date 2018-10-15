@@ -42,6 +42,8 @@ class ParserBase(object):
     _title_count_in_page = 0
     # 置顶标题中有多少个是需要抓取的
     _top_title_count = 0
+    # 置顶标题中不需要抓取的标题的集合
+    _top_no_title_set = set()
 
     # 需要获取的页数
     _current_page_count = _sum_page_count = 0
@@ -420,12 +422,13 @@ class ParserBase(object):
         has_title_set = set()
         for title in self._title_dic:
             has_title_set.add(self._title_dic[title]['pos'])
-        return all_title_idx_set - has_title_set
+        return all_title_idx_set - has_title_set - self._top_no_title_set
 
     # 获取相应标题所在的页的页码
     def get_page_idx_by_title_idx(self, title_idx):
         if self._title_count_in_page == 0:
             return 0
-        if title_idx <= self._title_count_in_page + self._top_title_count:
+        top_title_size = self.get_top_title_size()
+        if title_idx <= top_title_size:
             return 1
-        return (title_idx - self._top_title_count - 1) // self._title_count_in_page + 1
+        return (title_idx + self._title_count_in_page - top_title_size - 1) // self._title_count_in_page

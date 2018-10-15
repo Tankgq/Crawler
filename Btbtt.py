@@ -31,6 +31,8 @@ class BtbttParser(ParserBase):
             text = a_tag_list[idx].text.strip()
             if self.filter_title(text):
                 self._top_title_count += 1
+            else:
+                self._top_no_title_set.add(idx + 1)
         self._title_count_in_page = len(a_tag_list) - top_title_size
         a_text = html.xpath('//div[@class="page"]/a/text()')[-2]
         return self.get_first_integer_in_string(a_text)
@@ -59,7 +61,7 @@ class BtbttParser(ParserBase):
 
 def main():
     m_parser = BtbttParser()
-    # m_parser.patch_all()
+    m_parser.patch_all()
     m_parser.read_log()
     m_parser.read_info()
     m_parser.get_all_title()
