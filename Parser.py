@@ -1,19 +1,18 @@
 # -*- coding: utf-8 -*-
-import simplejson
 import codecs
 import gzip
-import re
 import os
-
+import re
+from abc import abstractmethod
 from urllib import request, error
+
+import simplejson
 # gevent 1.2.2
 from gevent import pool, monkey
-from abc import abstractmethod
 from lxml import etree
 
 
 class ParserBase(object):
-
     _headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.106 Safari/537.36',
         'Content-Type': 'text/html;charset=UTF-8',
@@ -31,6 +30,12 @@ class ParserBase(object):
     _log_title_set = set()
     # 网站的状态, 如最新的标题, 以及当前获得的标题的总数等
     _info = None
+    # 不需要抓取的 title 的位置列表
+    _delete_title_pos_set = set()
+    # 置顶的需要抓取的 title
+    _title_list_in_top = []
+    # 是否要重新获取所有的 title
+    _force_refresh_all_title = False
 
     # 总页数
     _page_count = 0
@@ -94,6 +99,23 @@ class ParserBase(object):
     def filter_image(self, image_name):
         return True
 
+    @abstractmethod
+    # 为了避免一些 title 是一样的, 所以需要从相应的 url 提取出一个可区分的 id
+    def get_id_in_title_url(self, title, url=None):
+        pass
+
+    # 获取 title 对应的唯一标识
+    def get_title_key(self, title, url=None):
+        if title.find('@') != -1:
+            return title
+        if url is None:
+            title_id = self.get_id_in_title_url(title)
+        else:
+            title_id = self.get_id_in_title_url(title, url=url)
+        if title_id is None:
+            return None
+        return '{}@{}'.format(title_id, title)
+
     # 获得网页的内容
     def get_html_content(self, url, on_error=None, encoding='utf-8'):
         req = request.Request(url=url, headers=self._headers)
@@ -105,7 +127,7 @@ class ParserBase(object):
             if encoding is not None:
                 data = data.decode(encoding)
             return data
-        except error.HTTPError as e:
+        except BaseException as e:
             if on_error is not None:
                 on_error(e)
         return None
@@ -125,16 +147,40 @@ class ParserBase(object):
     def get_page_url(self, idx):
         pass
 
-    @abstractmethod
     # 获取要抓取的网站有多少页
     # 获取要抓取的网站每页有多少标题
-    def get_page_count(self):
+    # 检查置顶的 title 是否更新了
+    def initiation(self):
+        html = self.get_etree_html(self, self.get_home_page(), self.get_html_encoding())
+        self.get_page_count(html)
+        self.get_title_count_in_page(html)
+        self.check_top_title_update_state(html)
+
+    @abstractmethod
+    # 获取要抓取的网站有多少页
+    def get_page_count(self, html):
+        pass
+
+    @abstractmethod
+    # 获取每一页中有多少个标题
+    def get_title_count_in_page(self, html):
+        pass
+
+    @abstractmethod
+    # 检查置顶的 title 是否更新了
+    def check_top_title_update_state(self, html):
         pass
 
     # 获取需要抓取的页码的集合
     def get_need_page_idx_set(self):
+        if self._force_refresh_all_title:
+            return [page_idx for page_idx in range(1, self._page_count + 1)]
         self.update_title_idx()
         need_title_set = self.get_need_title_set()
+        if self._info:
+            update_title_pos_list = list(need_title_set)
+            update_title_pos_list.sort()
+            self._info['update_title_pos'] = update_title_pos_list
         need_page_idx_set = set()
         for title_idx in need_title_set:
             need_page_idx_set.add(self.get_page_idx_by_title_idx(title_idx))
@@ -143,8 +189,8 @@ class ParserBase(object):
     # 获取要抓取的网站中所有的标题
     def get_all_title(self):
         self._current_page_count = 0
-        self._sum_page_count = self.get_page_count()
-        self._page_count = self._sum_page_count
+        self.initiation()
+        self._sum_page_count = self._page_count
         print('Total page count: {}'.format(self._sum_page_count))
         self._title_count = self.get_title_count()
         need_page_idx_set = self.get_need_page_idx_set()
@@ -175,15 +221,25 @@ class ParserBase(object):
         a_tag_list = html.xpath(self.get_title_list_in_page_rule())
         title_count = len(a_tag_list)
         self._sum_title_count += title_count
+        top_title_size = self.get_top_title_size()
         for idx in range(0, title_count):
             a_tag = a_tag_list[idx]
             title = self.get_title_in_tag(a_tag)
             title = self.adjust_file_name(title)
             if not self.filter_title(title):
                 continue
+            title = self.get_title_key(title, url=a_tag.attrib['href'])
             if self.get_url_by_title(title) is None:
-                self._title_dic[title] = {'url': a_tag.attrib['href'],
-                                          'pos': (page_idx - 1) * self._title_count_in_page + idx + 1}
+                pos = (page_idx - 1) * self._title_count_in_page + idx + 1
+                if page_idx > 1:
+                    pos += top_title_size
+                self._title_dic[title] = {'url': a_tag.attrib['href'], 'pos': pos}
+        if title_count < self._title_count_in_page and page_idx < self._page_count:
+            pos = (page_idx - 1) * self._title_count_in_page + title_count + 1
+            if page_idx > 1:
+                pos += top_title_size
+            for idx in range(pos, pos + self._title_count_in_page - title_count):
+                self._delete_title_pos_set.add(idx)
         self.log_all_title()
 
     @abstractmethod
@@ -222,6 +278,8 @@ class ParserBase(object):
 
     # 获取相应标题的地址
     def get_url_by_title(self, title):
+        if title is None:
+            return None
         if not self._title_dic.__contains__(title):
             return None
         if not self._title_dic[title].__contains__('url'):
@@ -242,7 +300,9 @@ class ParserBase(object):
         if not os.path.exists(info_path):
             return
         with codecs.open(info_path, 'r', 'utf-8') as fp:
-            _info = simplejson.load(fp, encoding='utf-8')
+            self._info = simplejson.load(fp, encoding='utf-8')
+        if self._info.__contains__('delete_title_pos_list'):
+            self._delete_title_pos_set = set(self._info['delete_title_pos_list'])
 
     # 存储要抓取的网站的相应信息到本地
     def write_info(self):
@@ -258,6 +318,10 @@ class ParserBase(object):
             self._info['title_count_in_page'] = self._title_count_in_page
         if self._image_count:
             self._info['image_count'] = self._image_count
+        if len(self._delete_title_pos_set) > 0:
+            delete_title_pos_list = list(self._delete_title_pos_set)
+            delete_title_pos_list.sort()
+            self._info['delete_title_pos_list'] = delete_title_pos_list
         output_path = self.get_output_path()
         if not os.path.exists(output_path):
             os.mkdir(output_path)
@@ -282,9 +346,12 @@ class ParserBase(object):
         with codecs.open(log_path, 'r', 'utf-8') as fp:
             self._title_dic = simplejson.load(fp, encoding='utf-8')
             # print('_target_dic.length: {}'.format(len(self._target_dic)))
+            top_title_size = self.get_top_title_size()
             for title in self._title_dic:
                 if self._title_dic[title].__contains__('image'):
                     self._log_title_set.add(title)
+                if self._title_dic[title]['pos'] <= top_title_size:
+                    self._title_list_in_top.append(title)
             # print('_log_target_set.length: {}'.format(len(self._log_target_set)))
 
     # 下载所有图片
@@ -319,7 +386,8 @@ class ParserBase(object):
         # 如果图片已经存在就需要下载了
         if not os.path.exists(path):
             content = self.download_file(url,
-                                         on_error=lambda e: print('Download error: {}, in: {}'.format(url, title_url)))
+                                         on_error=lambda e: print(
+                                             'Download error: {}, in: {}\n{}'.format(url, title_url, e)))
             if content is None:
                 return
             self._current_image_count += 1
@@ -329,7 +397,7 @@ class ParserBase(object):
 
     # 获取相应标题存储的路径
     def get_title_path(self, title):
-        return '{}/{}'.format(self.get_output_path(), title)
+        return '{}/{}'.format(self.get_output_path(), self.get_title_key(title))
 
     # 获取相应图片存储的路径
     def get_image_path(self, title, name):
@@ -406,12 +474,20 @@ class ParserBase(object):
     def update_title_idx(self):
         # 如果要抓取的网站没有更新内容, 就不需要更新了
         if self._info is None \
-                or self._sum_title_count == 0 \
-                or self._info['title_count'] == self._sum_title_count:
+                or self._title_count == 0 \
+                or self._info['title_count'] == self._title_count:
             return
-        update_count = self._sum_title_count - self._info['title_count']
+        update_count = self._title_count - self._info['title_count']
         for title in self._title_dic:
+            # 如果置顶的内容改变, 那么需要重新获取所有数据, 这边代码就不会执行到了
+            if self._title_dic[title]['pos'] <= self.get_top_title_size():
+                continue
             self._title_dic[title]['pos'] += update_count
+        # if len(self._delete_title_pos_set) > 0:
+        #     pos_set = set()
+        #     for pos in self._delete_title_pos_set:
+        #         pos_set.add(pos + update_count)
+        #     self._delete_title_pos_set = pos_set
 
     # 获取需要获取信息的标题列表
     def get_need_title_set(self):
@@ -422,7 +498,7 @@ class ParserBase(object):
         has_title_set = set()
         for title in self._title_dic:
             has_title_set.add(self._title_dic[title]['pos'])
-        return all_title_idx_set - has_title_set - self._top_no_title_set
+        return all_title_idx_set - has_title_set - self._top_no_title_set - self._delete_title_pos_set
 
     # 获取相应标题所在的页的页码
     def get_page_idx_by_title_idx(self, title_idx):

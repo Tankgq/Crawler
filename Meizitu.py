@@ -22,12 +22,24 @@ class MeizituParser(ParserBase):
     def get_page_url(self, idx):
         return 'http://www.meizitu.com/a/more_{}.html'.format(idx)
 
-    def get_page_count(self):
+    def get_id_in_title_url(self, title, url=None):
+        if url is None:
+            url = self.get_url_by_title(title)
+            if url is None:
+                return None
+        return url[url.rfind('/') + 1: url.rfind('.')]
+
+    def get_page_count(self, html):
+        a_href = html.xpath('//div[@id="wp_page_numbers"]//a/@href')[-1]
+        self._page_count = self.get_first_integer_in_string(a_href)
+
+    def get_title_count_in_page(self, html):
         html = self.get_etree_html(self, self.get_home_page(), self.get_html_encoding())
         a_tag_list = html.xpath(self.get_title_list_in_page_rule())
         self._title_count_in_page = len(a_tag_list)
-        a_href = html.xpath('//div[@id="wp_page_numbers"]//a/@href')[-1]
-        return self.get_first_integer_in_string(a_href)
+
+    def check_top_title_update_state(self, html):
+        self._force_refresh_all_title = False
 
     def get_title_list_in_page_rule(self):
         return '//*[@class="tit"]/a'
