@@ -483,6 +483,10 @@ class ParserBase(object):
             if self._title_dic[title]['pos'] <= self.get_top_title_size():
                 continue
             self._title_dic[title]['pos'] += update_count
+            if len(self._delete_title_pos_set) > 0:
+                # 越过需要删除的位置, 那些是绝对位置
+                while self._delete_title_pos_set.__contains__(self._title_dic[title]['pos']):
+                    self._title_dic[title]['pos'] += 1
         # if len(self._delete_title_pos_set) > 0:
         #     pos_set = set()
         #     for pos in self._delete_title_pos_set:
